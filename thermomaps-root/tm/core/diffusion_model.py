@@ -188,9 +188,6 @@ class DiffusionTrainer(DiffusionModel):
 
         def l1_loss(e, e_pred, weight):
             return (e - e_pred).abs().sum(sum_indices)
-        
-        def smooth_l1_loss(e, e_pred, weight):
-            return torch.nn.functional.smooth_l1_loss(e, e_pred, reduction='mean')
 
         def l2_loss(e, e_pred, weight):
             return (e - e_pred).pow(2).sum((1, 2, 3)).pow(0.5).mean()
@@ -211,7 +208,7 @@ class DiffusionTrainer(DiffusionModel):
         grad_accumulation_steps=1,
         print_freq=None,
         batch_size=128,
-        loss_type="l2",
+        loss_type="smooth_l1_loss",
     ):
         """
         Trains a diffusion model.
@@ -239,14 +236,14 @@ class DiffusionTrainer(DiffusionModel):
         for epoch in range(num_epochs):
             epoch_train_loss = []
             epoch += self.BB.start_epoch
-            for i, (temperatures, b) in enumerate(train_loader, 0):
+            for i, (temperatures, pressures, b) in enumerate(train_loader, 0):
                 t = self.sample_times(b.size(0))
                 t_prev = t - 1
                 t_prev[t_prev == -1] = 0
                 weight = self.DP.compute_SNR(t_prev) - self.DP.compute_SNR(t)
-                # logging.debug(f"{b.shape=}")
+                logging.debug(f"{b.shape=}")
                 target, output = self.train_step(b, t, self.prior, 
-                    batch_size=len(b), temperatures=temperatures, sample_type="from_data") # prior kwargs
+                    batch_size=len(b), pressures=pressures, temperatures=temperatures, sample_type="from_data") # prior kwargs
 
                 loss = (self.loss_function(target, output, weight, loss_type=loss_type) / grad_accumulation_steps)
 
@@ -264,13 +261,13 @@ class DiffusionTrainer(DiffusionModel):
             if self.test_loader:
                 with torch.no_grad():
                     epoch_test_loss = []
-                    for i, (temperatures, b) in enumerate(test_loader, 0):
+                    for i, (temperatures, pressures, b) in enumerate(test_loader, 0):
                         t = self.sample_times(b.size(0))
                         t_prev = t - 1
                         t_prev[t_prev == -1] = 0
                         weight = self.DP.compute_SNR(t_prev) - self.DP.compute_SNR(t)
                         target, output = self.train_step(b, t, self.prior, 
-                            batch_size=len(b), temperatures=temperatures, sample_type="from_data")
+                            batch_size=len(b), pressures=pressures, temperatures=temperatures, sample_type="from_data")
                         loss = self.loss_function(target, output, weight, loss_type=loss_type)
                         epoch_test_loss.append(loss.detach().cpu().numpy())
 
@@ -368,11 +365,11 @@ class DiffusionSampler(DiffusionModel):
         for t, t_next in time_pairs:
             t = torch.Tensor.repeat(t, prior_kwargs['batch_size'])
             t_next = torch.Tensor.repeat(t_next, prior_kwargs['batch_size'])
-            xt_next = self.denoise_step(xt, t, t_next, control=prior_kwargs['temperature'])
+            xt_next = self.denoise_step(xt, t, t_next, control_T=prior_kwargs['temperature'],control_P=prior_kwargs['pressure'])
             xt = xt_next
         return xt
 
-    def save_batch(self, batch, save_prefix, temperature, save_idx):
+    def save_batch(self, batch, save_prefix, temperature, pressure, save_idx):
         """
         Save a batch of samples.
 
@@ -382,13 +379,11 @@ class DiffusionSampler(DiffusionModel):
             temperature: Temperature for saving.
             save_idx (int): Index for saving.
         """
-        save_path = os.path.join(self.sample_dir, f"{temperature}K")
+        save_path = os.path.join(self.sample_dir, f"{temperature}K_{pressure}Pa")
         os.makedirs(save_path, exist_ok=True)
-        np.savez_compressed(
-            os.path.join(save_path, f"{save_prefix}_idx={save_idx}.npz"), traj=batch
-        )
+        np.savez_compressed(os.path.join(save_path, f"{save_prefix}_idx={save_idx}.npz"), traj=batch)
 
-    def sample_loop(self, num_samples, batch_size, temperature, gamma=1, eta=1, save_prefix=None):
+    def sample_loop(self, num_samples, batch_size, temperature, pressure, gamma=1, eta=1, save_prefix=None):
         """
         Sampling loop.
 
@@ -404,9 +399,9 @@ class DiffusionSampler(DiffusionModel):
             batch_size = num_samples
         with torch.no_grad():
             for save_idx in range(n_runs):
-                batch = self.sample_batch(eta=eta, gamma=gamma, batch_size=batch_size, temperature=temperature, sample_type="from_fit")
+                batch = self.sample_batch(eta=eta, gamma=gamma, batch_size=batch_size, temperature=temperature, pressure=pressure, sample_type="from_fit")
                 if self.sample_dir and save_prefix:
-                    self.save_batch(batch, save_prefix, temperature, save_idx)
+                    self.save_batch(batch, save_prefix, temperature, pressure, save_idx)
                 if save_idx == 0:
                     x = batch
                 else:
@@ -460,7 +455,7 @@ class SteeredDiffusionSampler(DiffusionSampler):
 
         self.kwargs = kwargs
 
-    def denoise_step(self, b_t, t, t_next, eta, gamma, control_dict, **prior_kwargs):
+    def denoise_step(self, b_t, t, t_next, eta, gamma, control_dict_T, control_dict_P, **prior_kwargs):
         """
         Wrapper which calls applies the (marginal) transition kernel
         of the reverse noising process.
@@ -469,13 +464,18 @@ class SteeredDiffusionSampler(DiffusionSampler):
         """
         # b_t_next = self.DP.reverse_step(b_t, t, t_next, self.BB, self.pred_type)
         b_t_next = self.DP.reverse_step(b_t, t, t_next, self.BB, self.pred_type, eta, self.prior, **prior_kwargs)
-        for channel, channel_control in control_dict.items():
-            logger.debug(f"Setting channel {channel} to {channel_control}")
-            b_t_next[:, channel] = (1 - gamma) * b_t_next[:, channel] + gamma * channel_control
+        for channelT, channel_controlT in control_dict_T.items():
+            # logger.debug(f"Setting channel {channel} to {channel_control}")
+            b_t_next[:, channelT] = (1 - gamma) * b_t_next[:, channelT] + gamma * channel_controlT
+            
+        for channelP, channel_controlP in control_dict_P.items():
+            # logger.debug(f"Setting channel {channel} to {channel_control}")
+            b_t_next[:, channelP] = (1 - gamma) * b_t_next[:, channelP] + gamma * channel_controlP
+      
         return b_t_next
     
     @staticmethod
-    def build_channel_dict(batch_size, prior, temperature):
+    def build_channel_dict_temp(batch_size, prior, temperature):
         """
         Build a dictionary of the conditional values for each channel.
 
@@ -499,7 +499,35 @@ class SteeredDiffusionSampler(DiffusionSampler):
         # logging.debug(f"{channel_dict=}")
         return channel_dict
 
-    def sample_batch(self, eta=1, gamma=0, batch_size=1000, temperature=1, **kwargs):
+
+
+
+    @staticmethod
+    def build_channel_dict_pres(batch_size, prior, pressure):
+        """
+        Build a dictionary of the conditional values for each channel.
+
+        Args:
+            batch_size: The size of the batch.
+            prior: The prior object.
+            temperature: The temperature, can be a scalar or a vector.
+
+        Returns:
+            Dict: Dictionary of the conditional values for each channel.
+        """
+
+        num_mean_ch = prior.channels_info["mean"]
+        num_num_mean_ch = len(num_mean_ch)
+        channel_slice = [batch_size] + [1] + list(prior.shape[1:])  # each channel is treated individually
+        channel_dict = {}
+        pressures = torch.full((num_num_mean_ch,), pressure)
+
+        for channel, pres in zip(num_mean_ch, pressures):
+            channel_dict[channel] = pres
+        # logging.debug(f"{channel_dict=}")
+        return channel_dict        
+
+    def sample_batch(self, eta=1, gamma=1, batch_size=1000, temperature=1, pressure =1, **kwargs):
         """
         Sample a batch of data.
 
@@ -512,18 +540,20 @@ class SteeredDiffusionSampler(DiffusionSampler):
         coord_channels = self.prior.channels_info["coordinate"]
         num_coord_channels = len(coord_channels)
         prior_formatted_temps = torch.Tensor([[temperature]*num_coord_channels]*batch_size)
+        prior_formatted_pres = torch.Tensor([[pressure]*num_coord_channels]*batch_size)
         logger.debug(f"{prior_formatted_temps}")
 
-        xt = self.prior.sample(batch_size=batch_size, temperatures=prior_formatted_temps)
+        xt = self.prior.sample(batch_size=batch_size, temperatures=prior_formatted_temps, pressures = prior_formatted_pres)
         # stds = self.prior.fit_prior(**prior_kwargs)
 
-        channel_control_dict = self.build_channel_dict(batch_size, self.prior, temperature)
+        channel_control_dict_T = self.build_channel_dict_temp(batch_size, self.prior, temperature)
+        channel_control_dict_P = self.build_channel_dict_pres(batch_size, self.prior, pressure)
         time_pairs = self.get_adjacent_times(self.DP.times)
 
         for t, t_next in time_pairs:
             t = torch.Tensor.repeat(t, batch_size)
             t_next = torch.Tensor.repeat(t_next, batch_size)
-            xt_next = self.denoise_step(xt, t, t_next, eta=eta, gamma=gamma, control_dict=channel_control_dict,
-                                        batch_size=batch_size, temperatures=prior_formatted_temps)
+            xt_next = self.denoise_step(xt, t, t_next, eta=eta, gamma=gamma, control_dict_T=channel_control_dict_T,control_dict_P=channel_control_dict_P,
+                                        batch_size=batch_size, temperatures=prior_formatted_temps, pressures = prior_formatted_pres)
             xt = xt_next
         return xt

@@ -237,6 +237,7 @@ class Loader(Dataset):
         self,
         data: torch.Tensor = None,
         temperatures: np.ndarray = None,
+        pressures: np.ndarray = None,
         transform_type: str = "normal",
         control_axis: int = 1,
         control_dims: tuple = (3,5),
@@ -275,6 +276,12 @@ class Loader(Dataset):
             self.temps = np.load(temperatures)
         elif isinstance(temperatures, np.ndarray):
             self.temps = temperatures
+
+        # Check the type of 'pressures' and load it accordingly
+        if isinstance(pressures, str):
+            self.pres = np.load(pressures)
+        elif isinstance(pressures, np.ndarray):
+            self.pres = pressures        
 
         # If dequantize is True, apply the dequantization
         if dequantize:
@@ -441,12 +448,13 @@ class Loader(Dataset):
         """
         x = torch.clone(self.data[index])
         temps = self.temps[index]
+        pres = self.pres[index]
 
         logger.debug(f"{x.shape}")
         mag = abs(x[0].sum())/x.shape[-1]**2
 
         logger.debug(f"Fetching sample with magnetization {mag} and temperature {temps}")
-        return temps, x.float()
+        return temps, pres, x.float()
 
     def __len__(self):
         """
