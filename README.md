@@ -1,1 +1,5 @@
-This repo showcases the ability of Thermodynamic Maps to learn the phase transition of the 2D Ising model. The notebook supports the Ising model component of [Inferring phase transitions and critical exponents from limited observations with Thermodynamic Maps](https://arxiv.org/abs/2308.14885).
+# Exponentially Tilted Thermodynamic Maps (expTM)
+
+This repository showcases the implementation and results from the paper:  
+**[Exponentially Tilted Thermodynamic Maps (expTM): Predicting Phase Transitions Across Temperature, Pressure, and Chemical Potential](https://arxiv.org/abs/2503.15080)**  
+applied to the Lattice Gas model.
