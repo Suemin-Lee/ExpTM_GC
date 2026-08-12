@@ -13,19 +13,19 @@ The grand canonical implementation uses temperature (T) and chemical potential (
 
 ### CO₂ (NPT)
 
-The NPT application uses temperature (T) and pressure (P) as thermodynamic control variables to generate ensembles and study pressure-driven phase behavior. Pressure-dependent data, trained models, and analysis outputs are contained within the corresponding `data/`, `models/`, and `plots/` directories.
+The NPT application uses temperature (T) and pressure (P) as thermodynamic control variables to generate ensembles and study pressure-driven phase behavior. Pressure-dependent data, trained models, and analysis outputs are contained within the corresponding `data/` directories.
 
 ### Core expTM Framework
 
-The `tm/` directory contains the core Thermodynamic Maps implementation used by the different thermodynamic ensembles and applications.
+The `tm/` directory contains the core expTM implementation used by the different thermodynamic ensembles and applications.
 
 ## Installation
 
 Clone the repository and install the required dependencies:
 
 ```bash
-git clone git@github.com:Suemin-Lee/ExpTM_GC.git
-cd ExpTM_GC/thermomaps-root
+git clone git@github.com:tiwarylab/ExpTM.git
+cd ExpTM/thermomaps-root
 pip install -r requirements.txt
 ```
 
