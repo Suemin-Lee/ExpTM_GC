@@ -1,0 +1,3 @@
+[console_scripts]
+ising_model = ising_cli:main
+thermomaps = tm_cli:main
